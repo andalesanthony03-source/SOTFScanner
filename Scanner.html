@@ -467,15 +467,15 @@
     verifyTicket(ticketId);
   });
 
-bridge.addEventListener("load", function() {
-  if (!bridge.contentWindow) {
-    showResult(
-      "CONNECTION ERROR",
-      "The scanner bridge could not be opened.",
-      "!"
-    );
-    return;
-  }
+
+ if (bridge) {
+  bridge.addEventListener("load", function() {
+    console.log("SOTF bridge iframe loaded.");
+  });
+} else {
+  console.error("SOTF bridge iframe not found. Check its HTML ID.");
+}
+
 
   bridge.contentWindow.postMessage({
     channel: CHANNEL,
