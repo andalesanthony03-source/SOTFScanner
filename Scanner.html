@@ -1,10 +1,13 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#101b1c">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SOTF Ticket Scanner</title>
+
+  <!-- QR scanner library -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 
   <style>
     :root {
@@ -125,9 +128,35 @@
       cursor: pointer;
     }
 
+    button.secondary {
+      border: 1px solid var(--gold);
+      background: transparent;
+      color: var(--gold);
+    }
+
     button:disabled {
       cursor: not-allowed;
       opacity: 0.65;
+    }
+
+    #reader {
+      width: 100%;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #101b1c;
+    }
+
+    #reader video {
+      border-radius: 10px;
+    }
+
+    .camera-note {
+      margin: 10px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+      text-align: center;
     }
 
     .result {
@@ -158,6 +187,15 @@
       overflow-wrap: anywhere;
     }
 
+    .status-valid .result-title {
+      color: #86efac;
+    }
+
+    .status-invalid .result-title,
+    .status-used .result-title {
+      color: #fca5a5;
+    }
+
     .footer {
       margin-top: 24px;
       color: var(--muted);
@@ -167,327 +205,356 @@
     }
 
     .hidden {
-      display: none;
+      display: none !important;
     }
   </style>
 </head>
 
 <body>
   <main class="scanner">
+
     <header class="brand">
-      <div class="logo" aria-hidden="true">✦</div>
-      <div class="eyebrow">OFFICIAL SCREENING</div>
-      <h1>Song of the Fireflies</h1>
-      <p class="subtitle">Ticket Verification &amp; Check-in</p>
+      <div class="logo">✦</div>
+      <div class="eyebrow">SONG OF THE FIREFLIES</div>
+      <h1>Ticket Scanner</h1>
+      <p class="subtitle">
+        Local demo · No Google Sheets or Apps Script connection
+      </p>
     </header>
 
     <div class="divider"></div>
 
-    <form id="ticketForm">
-      <label for="ticketId">Ticket ID</label>
-      <input
-        id="ticketId"
-        name="ticketId"
-        type="text"
-        placeholder="Enter or scan ticket ID"
-        autocomplete="off"
-        required
-      >
+    <!-- Camera scanner -->
+    <div id="reader" class="hidden"></div>
 
-      <button id="verifyButton" type="submit">
-        VERIFY TICKET
-      </button>
-    </form>
+    <button id="startCamera" type="button">
+      OPEN CAMERA
+    </button>
 
-    <section
-      id="result"
-      class="result hidden"
-      aria-live="polite"
+    <button id="stopCamera" class="secondary hidden" type="button">
+      STOP CAMERA
+    </button>
+
+    <p id="cameraNote" class="camera-note">
+      Allow camera access when prompted. Camera access requires HTTPS or localhost.
+    </p>
+
+    <div class="divider"></div>
+
+    <!-- Manual testing -->
+    <label for="ticketInput">
+      Or enter a ticket ID / paste QR content
+    </label>
+
+    <input
+      id="ticketInput"
+      type="text"
+      placeholder="SOTF-TEST001-T01"
+      autocomplete="off"
     >
-      <div class="result-icon" id="resultIcon">ℹ</div>
-      <div class="result-title" id="resultTitle">
-        NOT CONNECTED
-      </div>
-      <div class="result-message" id="resultMessage"></div>
+
+    <button id="verifyButton" type="button">
+      VERIFY TICKET
+    </button>
+
+    <button id="checkInButton" class="hidden" type="button">
+      CHECK IN
+    </button>
+
+    <!-- Result -->
+    <section id="result" class="result hidden" aria-live="polite">
+      <div id="resultIcon" class="result-icon">ℹ</div>
+      <div id="resultTitle" class="result-title">READY</div>
+      <div id="resultMessage" class="result-message"></div>
     </section>
 
     <footer class="footer">
-      Authorized screening staff only<br>
-      Song of the Fireflies · Official Ticket Validator
+      LOCAL TEST MODE<br>
+      Sample tickets only. Nothing is saved to your spreadsheet.
     </footer>
+
   </main>
 
-<iframe
-  id="sotfBridge"
-  src="https://script.google.com/macros/s/AKfycbwghjiVJQgtgq2-lRcpShSEtWZXJQor5Rzh4wN_n3p7wPoDye5kmFBQvyyGZyGndu_H/exec?bridge=1"
-  title="SOTF verification connection"
-  style="display:none"
-></iframe>
-  
-<script>
-  const form = document.getElementById("ticketForm");
-  const ticketInput = document.getElementById("ticketId");
-  const result = document.getElementById("result");
-  const resultIcon = document.getElementById("resultIcon");
-  const resultTitle = document.getElementById("resultTitle");
-  const resultMessage = document.getElementById("resultMessage");
+  <script>
+    // ==========================================
+    // SAMPLE DATA — LOCAL TESTING ONLY
+    // ==========================================
 
-  const bridge = document.getElementById("sotfBridge");
-  const CHANNEL = "SOTF_SCANNER";
+    const tickets = {
+      "SOTF-TEST001-T01": {
+        guest: "Test Guest",
+        status: "Unused"
+      },
 
-  let bridgeReady = false;
-  let pendingRequest = null;
-  let requestCounter = 0;
-  let verifiedTicket = null;
+      "SOTF-TEST002-T01": {
+        guest: "Second Test Guest",
+        status: "Unused"
+      }
+    };
 
-  function showResult(title, message, icon = "ℹ") {
-    result.classList.remove("hidden");
-    resultIcon.textContent = icon;
-    resultTitle.textContent = title;
-    resultMessage.textContent = message;
-  }
+    const ticketInput = document.getElementById("ticketInput");
+    const verifyButton = document.getElementById("verifyButton");
+    const checkInButton = document.getElementById("checkInButton");
+    const startCameraButton = document.getElementById("startCamera");
+    const stopCameraButton = document.getElementById("stopCamera");
+    const reader = document.getElementById("reader");
+    const result = document.getElementById("result");
+    const resultIcon = document.getElementById("resultIcon");
+    const resultTitle = document.getElementById("resultTitle");
+    const resultMessage = document.getElementById("resultMessage");
+    const cameraNote = document.getElementById("cameraNote");
 
-  function sendRequest(type, payload = {}) {
-    return new Promise((resolve, reject) => {
-      if (!bridgeReady || !bridge.contentWindow) {
-        reject(new Error("The scanner connection is not ready."));
+    let currentTicketId = "";
+    let qrScanner = null;
+    let cameraRunning = false;
+    let handlingScan = false;
+
+    // ==========================================
+    // READ TICKET ID FROM QR CONTENT
+    // ==========================================
+
+    function extractTicketId(rawText) {
+      const value = String(rawText || "").trim();
+
+      if (!value) return "";
+
+      // Supports QR codes containing a URL such as:
+      // https://example.com/?ticket=SOTF-TEST001-T01
+      try {
+        const url = new URL(value);
+        const ticket = url.searchParams.get("ticket");
+
+        if (ticket) {
+          return ticket.trim();
+        }
+      } catch (error) {
+        // The QR content may be a plain ticket ID.
+      }
+
+      // Supports plain ticket IDs or IDs inside longer text.
+      const match = value.match(/SOTF-[A-Z0-9-]+/i);
+
+      return match ? match[0].trim() : value;
+    }
+
+    // ==========================================
+    // DISPLAY RESULT
+    // ==========================================
+
+    function showResult(type, title, message) {
+      result.className = "result";
+
+      if (type) {
+        result.classList.add(type);
+      }
+
+      if (type === "status-valid") {
+        resultIcon.textContent = "✓";
+      } else if (
+        type === "status-used" ||
+        type === "status-invalid"
+      ) {
+        resultIcon.textContent = "⚠";
+      } else {
+        resultIcon.textContent = "ℹ";
+      }
+
+      resultTitle.textContent = title;
+      resultMessage.textContent = message;
+      result.classList.remove("hidden");
+    }
+
+    // ==========================================
+    // VERIFY TICKET
+    // ==========================================
+
+    function verifyTicket(rawValue) {
+      const id = extractTicketId(rawValue);
+
+      ticketInput.value = id;
+      currentTicketId = id;
+
+      checkInButton.classList.add("hidden");
+
+      if (!id) {
+        showResult(
+          "status-invalid",
+          "NO TICKET ID",
+          "Scan a QR code or enter a ticket ID first."
+        );
         return;
       }
 
-      if (pendingRequest) {
-        reject(new Error("Please wait for the current request."));
+      const ticket = tickets[id];
+
+      if (!ticket) {
+        showResult(
+          "status-invalid",
+          "INVALID TICKET",
+          "This ID is not in the local sample data: " + id
+        );
         return;
       }
 
-      const requestId = String(++requestCounter);
+      if (ticket.status === "Used") {
+        showResult(
+          "status-used",
+          "ALREADY USED — ENTRY DENIED",
+          "This ticket has already been checked in. Guest: " +
+            ticket.guest + " · Ticket: " + id
+        );
+        return;
+      }
 
-      const timer = setTimeout(() => {
-        pendingRequest = null;
-        reject(new Error("The server did not respond. Please try again."));
-      }, 20000);
+      showResult(
+        "status-valid",
+        "VALID TICKET",
+        "Guest: " + ticket.guest +
+          " · Ticket: " + id +
+          ". Tap CHECK IN to mark this sample ticket as used."
+      );
 
-      pendingRequest = {
-        requestId,
-        resolve,
-        reject,
-        timer
-      };
+      checkInButton.classList.remove("hidden");
+    }
 
-      bridge.contentWindow.postMessage({
-        channel: CHANNEL,
-        requestId,
-        type,
-        ...payload
-      }, "*");
+    verifyButton.addEventListener("click", function () {
+      verifyTicket(ticketInput.value);
     });
-  }
 
-  window.addEventListener("message", function(event) {
-    if (!bridge || event.source !== bridge.contentWindow) return;
-
-    const data = event.data;
-    if (!data || data.channel !== CHANNEL) return;
-
-    if (data.type === "BRIDGE_READY") {
-      bridgeReady = true;
-      return;
-    }
-
-    if (!pendingRequest ||
-        data.requestId !== pendingRequest.requestId) return;
-
-    clearTimeout(pendingRequest.timer);
-
-    const request = pendingRequest;
-    pendingRequest = null;
-    request.resolve(data.result);
-  });
-
-  function getSavedSession() {
-    try {
-      return sessionStorage.getItem("SOTF_SESSION_TOKEN") || "";
-    } catch (e) {
-      return "";
-    }
-  }
-
-  function saveSession(token) {
-    try {
-      if (token) {
-        sessionStorage.setItem("SOTF_SESSION_TOKEN", token);
+    ticketInput.addEventListener("keydown", function (event) {
+      if (event.key === "Enter") {
+        verifyTicket(ticketInput.value);
       }
-    } catch (e) {}
-  }
+    });
 
-  async function verifyTicket(ticketId) {
-    verifiedTicket = null;
+    // ==========================================
+    // LOCAL CHECK-IN
+    // ==========================================
 
-    showResult("VERIFYING TICKET",
-      "Checking the ticket against the official ticket records...", "⌛");
-
-    try {
-      const response = await sendRequest("VERIFY", { ticketId });
-
-      if (!response || typeof response !== "object") {
-        throw new Error("The server returned an invalid response.");
-      }
-
-      if (response.ok && response.status === "VALID TICKET") {
-        verifiedTicket = ticketId;
-
-        showResult(
-          "VALID TICKET",
-          "Guest: " + (response.guestName || "Name unavailable") +
-          ". Confirm the guest, then proceed to check-in.",
-          "✓"
-        );
-
-        // Add the check-in button dynamically if needed.
-        let checkinButton = document.getElementById("checkinButton");
-
-        if (!checkinButton) {
-          checkinButton = document.createElement("button");
-          checkinButton.id = "checkinButton";
-          checkinButton.type = "button";
-          checkinButton.textContent = "CHECK IN GUEST";
-          checkinButton.style.cssText =
-            "width:100%;margin-top:16px;padding:16px;" +
-            "border:0;border-radius:12px;font-weight:bold;" +
-            "cursor:pointer;";
-          result.appendChild(checkinButton);
-        }
-
-        checkinButton.onclick = () => checkInTicket(ticketId);
-        checkinButton.classList.remove("hidden");
-      } else {
-        const checkinButton = document.getElementById("checkinButton");
-        if (checkinButton) checkinButton.classList.add("hidden");
-
-        showResult(
-          response.status || "VERIFICATION FAILED",
-          response.message || "This ticket could not be verified.",
-          "!"
-        );
-      }
-    } catch (error) {
-      showResult("CONNECTION ERROR", error.message, "!");
-    }
-  }
-
-  async function checkInTicket(ticketId) {
-    if (verifiedTicket !== ticketId) {
-      showResult("VERIFY TICKET FIRST",
-        "Verify this ticket again before check-in.", "!");
-      return;
-    }
-
-    const savedToken = getSavedSession();
-    let pin = "";
-
-    if (!savedToken) {
-      pin = window.prompt("Enter the staff PIN to check in this guest.") || "";
-
-      if (!pin.trim()) {
-        showResult("PIN REQUIRED",
-          "Staff authorization is required for check-in.", "!");
+    checkInButton.addEventListener("click", function () {
+      if (!currentTicketId || !tickets[currentTicketId]) {
         return;
       }
-    }
 
-    const checkinButton = document.getElementById("checkinButton");
-    if (checkinButton) checkinButton.disabled = true;
+      const ticket = tickets[currentTicketId];
 
-    showResult("PROCESSING CHECK-IN",
-      "Confirming authorization and updating the ticket record...", "⌛");
-
-    try {
-      const response = await sendRequest("CHECK_IN", {
-        ticketId,
-        pin,
-        sessionToken: savedToken
-      });
-
-      if (response && response.sessionToken) {
-        saveSession(response.sessionToken);
-      }
-
-      if (response && response.ok &&
-          response.status === "CHECK-IN SUCCESSFUL") {
-        verifiedTicket = null;
-
+      if (ticket.status === "Used") {
         showResult(
-          "CHECK-IN SUCCESSFUL",
-          "Guest: " + (response.guestName || "Name unavailable") +
-          ". The ticket has been marked as used.",
-          "✓"
+          "status-used",
+          "ALREADY USED — ENTRY DENIED",
+          "This ticket has already been checked in."
         );
 
-        if (checkinButton) checkinButton.classList.add("hidden");
-      } else {
-        if (response && response.status === "PIN REQUIRED") {
-          try {
-            sessionStorage.removeItem("SOTF_SESSION_TOKEN");
-          } catch (e) {}
+        checkInButton.classList.add("hidden");
+        return;
+      }
+
+      ticket.status = "Used";
+
+      checkInButton.classList.add("hidden");
+
+      showResult(
+        "status-valid",
+        "CHECK-IN SUCCESSFUL!",
+        "Guest: " + ticket.guest +
+          " · Ticket: " + currentTicketId +
+          ". This change exists only in this open page."
+      );
+    });
+
+    // ==========================================
+    // CAMERA QR SCANNER
+    // ==========================================
+
+    async function startCamera() {
+      if (!window.Html5Qrcode) {
+        cameraNote.textContent =
+          "The QR scanner library did not load. Check your internet connection and reload.";
+        return;
+      }
+
+      if (
+        !navigator.mediaDevices ||
+        !navigator.mediaDevices.getUserMedia
+      ) {
+        cameraNote.textContent =
+          "Camera access is unavailable here. Open this page using HTTPS or localhost.";
+        return;
+      }
+
+      startCameraButton.disabled = true;
+      cameraNote.textContent = "Requesting camera permission…";
+      reader.classList.remove("hidden");
+
+      try {
+        if (!qrScanner) {
+          qrScanner = new Html5Qrcode("reader");
         }
 
-        showResult(
-          response && response.status || "CHECK-IN FAILED",
-          response && response.message || "The guest was not checked in.",
-          "!"
+        await qrScanner.start(
+          { facingMode: "environment" },
+          {
+            fps: 10,
+            qrbox: { width: 240, height: 240 },
+            aspectRatio: 1.0
+          },
+
+          async function (decodedText) {
+            if (handlingScan) return;
+
+            handlingScan = true;
+
+            // Stop after one QR read to prevent repeated scans.
+            await stopCamera();
+
+            verifyTicket(decodedText);
+
+            cameraNote.textContent =
+              "QR code detected. Press OPEN CAMERA to scan another ticket.";
+
+            handlingScan = false;
+          },
+
+          function () {
+            // Ignore normal frames where no QR code is detected.
+          }
         );
 
-        if (checkinButton) checkinButton.classList.remove("hidden");
+        cameraRunning = true;
+        startCameraButton.classList.add("hidden");
+        stopCameraButton.classList.remove("hidden");
+
+        cameraNote.textContent =
+          "Point the camera at the ticket QR code.";
+      } catch (error) {
+        reader.classList.add("hidden");
+        startCameraButton.disabled = false;
+
+        cameraNote.textContent =
+          "Could not open the camera. Allow camera permission and use HTTPS or localhost. " +
+          (error && error.message ? error.message : "");
       }
-    } catch (error) {
-      showResult("CONNECTION ERROR", error.message, "!");
-      if (checkinButton) checkinButton.classList.remove("hidden");
-    } finally {
-      if (checkinButton) checkinButton.disabled = false;
-    }
-  }
-
-  const params = new URLSearchParams(window.location.search);
-  const ticketFromUrl = params.get("ticket");
-
-  if (ticketFromUrl) {
-    ticketInput.value = ticketFromUrl.trim();
-  }
-
-  form.addEventListener("submit", function(event) {
-    event.preventDefault();
-
-    const ticketId = ticketInput.value.trim();
-
-    if (!ticketId) {
-      showResult("TICKET ID REQUIRED",
-        "Enter a ticket ID to continue.", "!");
-      return;
     }
 
-    verifyTicket(ticketId);
-  });
+    async function stopCamera() {
+      if (qrScanner && cameraRunning) {
+        try {
+          await qrScanner.stop();
+        } catch (error) {
+          // Ignore camera stop errors.
+        }
 
+        cameraRunning = false;
+      }
 
- if (bridge) {
-  bridge.addEventListener("load", function() {
-    console.log("SOTF bridge iframe loaded.");
-  });
-} else {
-  console.error("SOTF bridge iframe not found. Check its HTML ID.");
-}
+      startCameraButton.classList.remove("hidden");
+      startCameraButton.disabled = false;
+      stopCameraButton.classList.add("hidden");
+      reader.classList.add("hidden");
+    }
 
-
-  bridge.contentWindow.postMessage({
-    channel: CHANNEL,
-    type: "PING",
-    requestId: "bridge-check"
-  }, "*");
-});
-</script>
-
-
-  
-
-
+    startCameraButton.addEventListener("click", startCamera);
+    stopCameraButton.addEventListener("click", stopCamera);
+  </script>
 </body>
 </html>
