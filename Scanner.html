@@ -304,9 +304,6 @@
   const WEB_APP_URL =
     "https://script.google.com/macros/s/AKfycbwghjiVJQgtgq2-lRcpShSEtWZXJQor5Rzh4wN_n3p7wPoDye5kmFBQvyyGZyGndu_H/exec";
 
-  const bridge = document.getElementById("scannerBridge");
-    bridge.src = WEB_APP_URL + "?bridge=1";
-
   const CHANNEL = "SOTF_SCANNER";
   const REQUEST_TIMEOUT = 20000;
 
@@ -385,12 +382,31 @@
   // CONNECT TO SCANNER BRIDGE
   // ==========================================
 
-  function connectBridge() {
-    bridgeReady = false;
-    cameraNote.textContent = "Connecting to the SOTF ticket system…";
+  
+function connectBridge() {
+  bridgeReady = false;
+  cameraNote.textContent = "Connecting to the SOTF ticket system…";
 
-    bridgeFrame.src = WEB_APP_URL + "?bridge=1";
-  }
+  bridgeFrame.onload = function() {
+    const requestId =
+      Date.now().toString(36) + "-ping-" + (++requestCounter);
+
+    // Ask the bridge to confirm that it is responding.
+    bridgeFrame.contentWindow.postMessage({
+      channel: CHANNEL,
+      type: "PING",
+      requestId: requestId
+    }, "*");
+  };
+
+  bridgeFrame.onerror = function() {
+    bridgeReady = false;
+    cameraNote.textContent =
+      "Could not load the SOTF connection. Check the deployment URL and access settings.";
+  };
+
+  bridgeFrame.src = WEB_APP_URL + "?bridge=1";
+}
 
   function sendBridgeRequest(type, payload = {}) {
     return new Promise((resolve, reject) => {
@@ -426,28 +442,31 @@
     });
   }
 
-  window.addEventListener("message", function(event) {
-    if (event.source !== bridgeFrame.contentWindow) return;
+  
+window.addEventListener("message", function(event) {
+  const data = event.data;
 
-    const data = event.data;
+  if (!data || data.channel !== CHANNEL) return;
 
-    if (!data || data.channel !== CHANNEL) return;
+  // Only accept messages from the bridge iframe.
+  if (event.source !== bridgeFrame.contentWindow) return;
 
-    if (data.type === "BRIDGE_READY") {
-      bridgeReady = true;
-      cameraNote.textContent = "Connected to the SOTF ticket system.";
-      return;
-    }
+  if (data.type === "BRIDGE_READY") {
+    bridgeReady = true;
+    cameraNote.textContent = "Connected to the SOTF ticket system.";
+    return;
+  }
 
-    if (!data.requestId) return;
+  if (!data.requestId) return;
 
-    const pending = pendingRequests.get(data.requestId);
-    if (!pending) return;
+  const pending = pendingRequests.get(data.requestId);
+  if (!pending) return;
 
-    clearTimeout(pending.timeout);
-    pendingRequests.delete(data.requestId);
-    pending.resolve(data.result);
-  });
+  clearTimeout(pending.timeout);
+  pendingRequests.delete(data.requestId);
+  pending.resolve(data.result);
+});
+
 
   // ==========================================
   // INTERPRET APPS SCRIPT RESPONSE
