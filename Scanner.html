@@ -222,6 +222,15 @@
       </p>
     </header>
 
+    <iframe
+  id="scannerBridge"
+  title="SOTF Apps Script connection"
+  hidden
+  aria-hidden="true"
+></iframe>
+
+
+
     <div class="divider"></div>
 
     <!-- Camera scanner -->
@@ -253,6 +262,16 @@
       autocomplete="off"
     >
 
+    
+<label for="staffPin">Staff PIN</label>
+<input
+  id="staffPin"
+  type="password"
+  placeholder="Enter staff PIN"
+  autocomplete="current-password"
+>
+
+
     <button id="verifyButton" type="button">
       VERIFY TICKET
     </button>
@@ -275,286 +294,459 @@
 
   </main>
 
-  <script>
-    // ==========================================
-    // SAMPLE DATA — LOCAL TESTING ONLY
-    // ==========================================
+ 
 
-    const tickets = {
-      "SOTF-TEST001-T01": {
-        guest: "Test Guest",
-        status: "Unused"
-      },
+<script>
+  // ==========================================
+  // SOTF APPS SCRIPT CONNECTION
+  // ==========================================
 
-      "SOTF-TEST002-T01": {
-        guest: "Second Test Guest",
-        status: "Unused"
-      }
-    };
+  const WEB_APP_URL =
+    "https://script.google.com/macros/s/AKfycbwghjiVJQgtgq2-lRcpShSEtWZXJQor5Rzh4wN_n3p7wPoDye5kmFBQvyyGZyGndu_H/exec";
 
-    const ticketInput = document.getElementById("ticketInput");
-    const verifyButton = document.getElementById("verifyButton");
-    const checkInButton = document.getElementById("checkInButton");
-    const startCameraButton = document.getElementById("startCamera");
-    const stopCameraButton = document.getElementById("stopCamera");
-    const reader = document.getElementById("reader");
-    const result = document.getElementById("result");
-    const resultIcon = document.getElementById("resultIcon");
-    const resultTitle = document.getElementById("resultTitle");
-    const resultMessage = document.getElementById("resultMessage");
-    const cameraNote = document.getElementById("cameraNote");
+  const CHANNEL = "SOTF_SCANNER";
+  const REQUEST_TIMEOUT = 20000;
 
-    let currentTicketId = "";
-    let qrScanner = null;
-    let cameraRunning = false;
-    let handlingScan = false;
+  const ticketInput = document.getElementById("ticketInput");
+  const verifyButton = document.getElementById("verifyButton");
+  const checkInButton = document.getElementById("checkInButton");
+  const startCameraButton = document.getElementById("startCamera");
+  const stopCameraButton = document.getElementById("stopCamera");
+  const reader = document.getElementById("reader");
+  const result = document.getElementById("result");
+  const resultIcon = document.getElementById("resultIcon");
+  const resultTitle = document.getElementById("resultTitle");
+  const resultMessage = document.getElementById("resultMessage");
+  const cameraNote = document.getElementById("cameraNote");
+  const bridgeFrame = document.getElementById("scannerBridge");
+  const staffPin = document.getElementById("staffPin");
 
-    // ==========================================
-    // READ TICKET ID FROM QR CONTENT
-    // ==========================================
+  let currentTicketId = "";
+  let currentGuest = "";
+  let sessionToken = "";
+  let qrScanner = null;
+  let cameraRunning = false;
+  let handlingScan = false;
+  let bridgeReady = false;
+  let requestCounter = 0;
+  const pendingRequests = new Map();
 
-    function extractTicketId(rawText) {
-      const value = String(rawText || "").trim();
+  // ==========================================
+  // READ TICKET ID FROM QR CONTENT
+  // ==========================================
 
-      if (!value) return "";
+  function extractTicketId(rawText) {
+    const value = String(rawText || "").trim();
 
-      // Supports QR codes containing a URL such as:
-      // https://example.com/?ticket=SOTF-TEST001-T01
-      try {
-        const url = new URL(value);
-        const ticket = url.searchParams.get("ticket");
+    if (!value) return "";
 
-        if (ticket) {
-          return ticket.trim();
-        }
-      } catch (error) {
-        // The QR content may be a plain ticket ID.
-      }
+    try {
+      const url = new URL(value);
+      const ticket = url.searchParams.get("ticket");
 
-      // Supports plain ticket IDs or IDs inside longer text.
-      const match = value.match(/SOTF-[A-Z0-9-]+/i);
-
-      return match ? match[0].trim() : value;
+      if (ticket) return ticket.trim();
+    } catch (error) {
+      // The QR content may be a plain ticket ID.
     }
 
-    // ==========================================
-    // DISPLAY RESULT
-    // ==========================================
+    const match = value.match(/SOTF-[A-Z0-9-]+/i);
+    return match ? match[0].trim() : value;
+  }
 
-    function showResult(type, title, message) {
-      result.className = "result";
+  // ==========================================
+  // DISPLAY RESULT
+  // ==========================================
 
-      if (type) {
-        result.classList.add(type);
-      }
+  function showResult(type, title, message) {
+    result.className = "result";
 
-      if (type === "status-valid") {
-        resultIcon.textContent = "✓";
-      } else if (
-        type === "status-used" ||
-        type === "status-invalid"
-      ) {
-        resultIcon.textContent = "⚠";
-      } else {
-        resultIcon.textContent = "ℹ";
-      }
+    if (type) result.classList.add(type);
 
-      resultTitle.textContent = title;
-      resultMessage.textContent = message;
-      result.classList.remove("hidden");
+    if (type === "status-valid") {
+      resultIcon.textContent = "✓";
+    } else if (
+      type === "status-used" ||
+      type === "status-invalid"
+    ) {
+      resultIcon.textContent = "⚠";
+    } else {
+      resultIcon.textContent = "ℹ";
     }
 
-    // ==========================================
-    // VERIFY TICKET
-    // ==========================================
+    resultTitle.textContent = title;
+    resultMessage.textContent = message;
+    result.classList.remove("hidden");
+  }
 
-    function verifyTicket(rawValue) {
-      const id = extractTicketId(rawValue);
+  // ==========================================
+  // CONNECT TO SCANNER BRIDGE
+  // ==========================================
 
-      ticketInput.value = id;
-      currentTicketId = id;
+  function connectBridge() {
+    bridgeReady = false;
+    cameraNote.textContent = "Connecting to the SOTF ticket system…";
 
+    bridgeFrame.src = WEB_APP_URL + "?bridge=1";
+  }
+
+  function sendBridgeRequest(type, payload = {}) {
+    return new Promise((resolve, reject) => {
+      if (!bridgeReady || !bridgeFrame.contentWindow) {
+        reject(new Error(
+          "Scanner bridge is not ready. Reload the page and try again."
+        ));
+        return;
+      }
+
+      const requestId =
+        Date.now().toString(36) + "-" + (++requestCounter);
+
+      const timeout = setTimeout(() => {
+        pendingRequests.delete(requestId);
+        reject(new Error(
+          "Apps Script timed out. Check your deployment and connection."
+        ));
+      }, REQUEST_TIMEOUT);
+
+      pendingRequests.set(requestId, {
+        resolve,
+        reject,
+        timeout
+      });
+
+      bridgeFrame.contentWindow.postMessage({
+        channel: CHANNEL,
+        type,
+        requestId,
+        ...payload
+      }, "*");
+    });
+  }
+
+  window.addEventListener("message", function(event) {
+    if (event.source !== bridgeFrame.contentWindow) return;
+
+    const data = event.data;
+
+    if (!data || data.channel !== CHANNEL) return;
+
+    if (data.type === "BRIDGE_READY") {
+      bridgeReady = true;
+      cameraNote.textContent = "Connected to the SOTF ticket system.";
+      return;
+    }
+
+    if (!data.requestId) return;
+
+    const pending = pendingRequests.get(data.requestId);
+    if (!pending) return;
+
+    clearTimeout(pending.timeout);
+    pendingRequests.delete(data.requestId);
+    pending.resolve(data.result);
+  });
+
+  // ==========================================
+  // INTERPRET APPS SCRIPT RESPONSE
+  // ==========================================
+
+  function getStatus(response) {
+    return String(
+      response && (response.status || response.message) || "SYSTEM ERROR"
+    ).trim().toUpperCase();
+  }
+
+  function getGuest(response) {
+    return String(
+      response && (
+        response.guest ||
+        response.name ||
+        response.guestName
+      ) || currentGuest || ""
+    ).trim();
+  }
+
+  function getMessage(response) {
+    const parts = [];
+    const guest = getGuest(response);
+
+    if (response && response.message) {
+      parts.push(String(response.message));
+    }
+
+    if (guest) parts.push("Guest: " + guest);
+
+    if (currentTicketId) {
+      parts.push("Ticket: " + currentTicketId);
+    }
+
+    return parts.join(" · ") || getStatus(response);
+  }
+
+  function displayServerResult(response, action) {
+    const status = getStatus(response);
+
+    if (!response) {
+      showResult(
+        "status-invalid",
+        "NO SERVER RESPONSE",
+        "Apps Script returned an empty response."
+      );
       checkInButton.classList.add("hidden");
+      return;
+    }
 
-      if (!id) {
-        showResult(
-          "status-invalid",
-          "NO TICKET ID",
-          "Scan a QR code or enter a ticket ID first."
-        );
-        return;
-      }
+    if (
+      response.sessionToken &&
+      (
+        status.includes("SUCCESS") ||
+        status === "VALID TICKET"
+      )
+    ) {
+      sessionToken = response.sessionToken;
+    }
 
-      const ticket = tickets[id];
-
-      if (!ticket) {
-        showResult(
-          "status-invalid",
-          "INVALID TICKET",
-          "This ID is not in the local sample data: " + id
-        );
-        return;
-      }
-
-      if (ticket.status === "Used") {
-        showResult(
-          "status-used",
-          "ALREADY USED — ENTRY DENIED",
-          "This ticket has already been checked in. Guest: " +
-            ticket.guest + " · Ticket: " + id
-        );
-        return;
-      }
+    if (
+      status === "VALID TICKET" ||
+      status === "VALID"
+    ) {
+      currentGuest = getGuest(response);
 
       showResult(
         "status-valid",
         "VALID TICKET",
-        "Guest: " + ticket.guest +
-          " · Ticket: " + id +
-          ". Tap CHECK IN to mark this sample ticket as used."
+        getMessage(response) + ". Confirm the guest before checking in."
       );
 
       checkInButton.classList.remove("hidden");
+      return;
     }
 
-    verifyButton.addEventListener("click", function () {
-      verifyTicket(ticketInput.value);
-    });
-
-    ticketInput.addEventListener("keydown", function (event) {
-      if (event.key === "Enter") {
-        verifyTicket(ticketInput.value);
-      }
-    });
-
-    // ==========================================
-    // LOCAL CHECK-IN
-    // ==========================================
-
-    checkInButton.addEventListener("click", function () {
-      if (!currentTicketId || !tickets[currentTicketId]) {
-        return;
-      }
-
-      const ticket = tickets[currentTicketId];
-
-      if (ticket.status === "Used") {
-        showResult(
-          "status-used",
-          "ALREADY USED — ENTRY DENIED",
-          "This ticket has already been checked in."
-        );
-
-        checkInButton.classList.add("hidden");
-        return;
-      }
-
-      ticket.status = "Used";
-
-      checkInButton.classList.add("hidden");
+    if (
+      status.includes("CHECK-IN SUCCESSFUL") ||
+      status.includes("CHECK IN SUCCESSFUL")
+    ) {
+      currentGuest = getGuest(response);
 
       showResult(
         "status-valid",
-        "CHECK-IN SUCCESSFUL!",
-        "Guest: " + ticket.guest +
-          " · Ticket: " + currentTicketId +
-          ". This change exists only in this open page."
+        "CHECK-IN SUCCESSFUL",
+        getMessage(response) + ". The server confirmed the check-in."
       );
-    });
 
-    // ==========================================
-    // CAMERA QR SCANNER
-    // ==========================================
+      checkInButton.classList.add("hidden");
+      staffPin.value = "";
+      return;
+    }
 
-    async function startCamera() {
-      if (!window.Html5Qrcode) {
-        cameraNote.textContent =
-          "The QR scanner library did not load. Check your internet connection and reload.";
-        return;
+    if (
+      status.includes("ALREADY USED") ||
+      status.includes("ALREADY CHECKED") ||
+      status.includes("REVOKED")
+    ) {
+      showResult("status-used", status, getMessage(response));
+      checkInButton.classList.add("hidden");
+      return;
+    }
+
+    showResult(
+      "status-invalid",
+      status,
+      getMessage(response)
+    );
+
+    // Allow retry after a PIN error, but not for an invalid ticket.
+    if (
+      action === "checkin" &&
+      (
+        status.includes("PIN REQUIRED") ||
+        status.includes("INCORRECT PIN") ||
+        status.includes("UNAUTHORIZED")
+      )
+    ) {
+      checkInButton.classList.remove("hidden");
+    } else {
+      checkInButton.classList.add("hidden");
+    }
+  }
+
+  // ==========================================
+  // VERIFY AGAINST GOOGLE SHEETS
+  // ==========================================
+
+  async function verifyTicket(rawValue) {
+    const id = extractTicketId(rawValue);
+
+    ticketInput.value = id;
+    currentTicketId = id;
+    currentGuest = "";
+
+    checkInButton.classList.add("hidden");
+
+    if (!id) {
+      showResult(
+        "status-invalid",
+        "NO TICKET ID",
+        "Scan a QR code or enter a ticket ID first."
+      );
+      return;
+    }
+
+    verifyButton.disabled = true;
+
+    showResult(
+      "",
+      "VERIFYING…",
+      "Checking the ticket against the SOTF spreadsheet."
+    );
+
+    try {
+      const response = await sendBridgeRequest("VERIFY", {
+        ticketId: id
+      });
+
+      displayServerResult(response, "verify");
+    } catch (error) {
+      showResult("status-invalid", "CONNECTION ERROR", error.message);
+    } finally {
+      verifyButton.disabled = false;
+    }
+  }
+
+  verifyButton.addEventListener("click", function() {
+    verifyTicket(ticketInput.value);
+  });
+
+  ticketInput.addEventListener("keydown", function(event) {
+    if (event.key === "Enter") {
+      verifyTicket(ticketInput.value);
+    }
+  });
+
+  // ==========================================
+  // CHECK IN THROUGH APPS SCRIPT
+  // ==========================================
+
+  checkInButton.addEventListener("click", async function() {
+    if (!currentTicketId) return;
+
+    checkInButton.disabled = true;
+
+    try {
+      const response = await sendBridgeRequest("CHECK_IN", {
+        ticketId: currentTicketId,
+        pin: staffPin ? staffPin.value.trim() : "",
+        sessionToken: sessionToken
+      });
+
+      displayServerResult(response, "checkin");
+    } catch (error) {
+      showResult("status-invalid", "CONNECTION ERROR", error.message);
+    } finally {
+      checkInButton.disabled = false;
+    }
+  });
+
+  // ==========================================
+  // CAMERA QR SCANNER
+  // ==========================================
+
+  async function startCamera() {
+    if (!window.Html5Qrcode) {
+      cameraNote.textContent =
+        "The QR scanner library did not load. Check your internet connection and reload.";
+      return;
+    }
+
+    if (!navigator.mediaDevices ||
+        !navigator.mediaDevices.getUserMedia) {
+      cameraNote.textContent =
+        "Camera access requires HTTPS or localhost.";
+      return;
+    }
+
+    if (!bridgeReady) {
+      cameraNote.textContent =
+        "The SOTF system is not connected yet. Please wait and try again.";
+      return;
+    }
+
+    startCameraButton.disabled = true;
+    cameraNote.textContent = "Requesting camera permission…";
+    reader.classList.remove("hidden");
+
+    try {
+      if (!qrScanner) {
+        qrScanner = new Html5Qrcode("reader");
       }
 
-      if (
-        !navigator.mediaDevices ||
-        !navigator.mediaDevices.getUserMedia
-      ) {
-        cameraNote.textContent =
-          "Camera access is unavailable here. Open this page using HTTPS or localhost.";
-        return;
-      }
+      await qrScanner.start(
+        { facingMode: "environment" },
+        {
+          fps: 10,
+          qrbox: { width: 240, height: 240 },
+          aspectRatio: 1.0
+        },
+        async function(decodedText) {
+          if (handlingScan) return;
 
-      startCameraButton.disabled = true;
-      cameraNote.textContent = "Requesting camera permission…";
-      reader.classList.remove("hidden");
+          handlingScan = true;
 
-      try {
-        if (!qrScanner) {
-          qrScanner = new Html5Qrcode("reader");
-        }
-
-        await qrScanner.start(
-          { facingMode: "environment" },
-          {
-            fps: 10,
-            qrbox: { width: 240, height: 240 },
-            aspectRatio: 1.0
-          },
-
-          async function (decodedText) {
-            if (handlingScan) return;
-
-            handlingScan = true;
-
-            // Stop after one QR read to prevent repeated scans.
+          try {
             await stopCamera();
-
-            verifyTicket(decodedText);
+            await verifyTicket(decodedText);
 
             cameraNote.textContent =
               "QR code detected. Press OPEN CAMERA to scan another ticket.";
-
+          } finally {
             handlingScan = false;
-          },
-
-          function () {
-            // Ignore normal frames where no QR code is detected.
           }
-        );
-
-        cameraRunning = true;
-        startCameraButton.classList.add("hidden");
-        stopCameraButton.classList.remove("hidden");
-
-        cameraNote.textContent =
-          "Point the camera at the ticket QR code.";
-      } catch (error) {
-        reader.classList.add("hidden");
-        startCameraButton.disabled = false;
-
-        cameraNote.textContent =
-          "Could not open the camera. Allow camera permission and use HTTPS or localhost. " +
-          (error && error.message ? error.message : "");
-      }
-    }
-
-    async function stopCamera() {
-      if (qrScanner && cameraRunning) {
-        try {
-          await qrScanner.stop();
-        } catch (error) {
-          // Ignore camera stop errors.
+        },
+        function() {
+          // Ignore frames without a QR code.
         }
+      );
 
-        cameraRunning = false;
+      cameraRunning = true;
+      startCameraButton.classList.add("hidden");
+      stopCameraButton.classList.remove("hidden");
+
+      cameraNote.textContent =
+        "Point the camera at the ticket QR code.";
+    } catch (error) {
+      reader.classList.add("hidden");
+      startCameraButton.disabled = false;
+
+      cameraNote.textContent =
+        "Could not open the camera. Allow camera permission and use HTTPS or localhost. " +
+        (error && error.message ? error.message : "");
+    }
+  }
+
+  async function stopCamera() {
+    if (qrScanner && cameraRunning) {
+      try {
+        await qrScanner.stop();
+      } catch (error) {
+        // Ignore camera stop errors.
       }
 
-      startCameraButton.classList.remove("hidden");
-      startCameraButton.disabled = false;
-      stopCameraButton.classList.add("hidden");
-      reader.classList.add("hidden");
+      cameraRunning = false;
     }
 
-    startCameraButton.addEventListener("click", startCamera);
-    stopCameraButton.addEventListener("click", stopCamera);
-  </script>
+    startCameraButton.classList.remove("hidden");
+    startCameraButton.disabled = false;
+    stopCameraButton.classList.add("hidden");
+    reader.classList.add("hidden");
+  }
+
+  startCameraButton.addEventListener("click", startCamera);
+  stopCameraButton.addEventListener("click", stopCamera);
+
+  // Connect when the page loads.
+  connectBridge();
+</script>
+
+
 </body>
 </html>
