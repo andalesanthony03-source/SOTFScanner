@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -330,6 +329,18 @@
   let bridgeReady = false;
   let requestCounter = 0;
   const pendingRequests = new Map();
+
+const ALLOWED_PARENT_ORIGIN = "https://morissette.space";
+
+window.addEventListener("message", function(event) {
+  if (event.origin !== ALLOWED_PARENT_ORIGIN) return;
+  if (event.source !== window.parent) return;
+
+  const data = event.data;
+  if (!data || data.channel !== CHANNEL) return;
+
+  // Keep your existing PING, VERIFY, and CHECK_IN handlers here.
+});
 
   // ==========================================
   // READ TICKET ID FROM QR CONTENT
