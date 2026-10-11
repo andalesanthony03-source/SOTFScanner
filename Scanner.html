@@ -304,6 +304,9 @@
   const WEB_APP_URL =
     "https://script.google.com/macros/s/AKfycbwghjiVJQgtgq2-lRcpShSEtWZXJQor5Rzh4wN_n3p7wPoDye5kmFBQvyyGZyGndu_H/exec";
 
+  const bridge = document.getElementById("scannerBridge");
+    bridge.src = WEB_APP_URL + "?bridge=1";
+
   const CHANNEL = "SOTF_SCANNER";
   const REQUEST_TIMEOUT = 20000;
 
