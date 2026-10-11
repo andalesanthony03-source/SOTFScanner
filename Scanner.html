@@ -330,7 +330,7 @@
   let requestCounter = 0;
   const pendingRequests = new Map();
 
-const ALLOWED_PARENT_ORIGIN = "https://morissette.space";
+const ALLOWED_PARENT_ORIGIN = "https://morissette.space/Scanner.html";
 
 window.addEventListener("message", function(event) {
   if (event.origin !== ALLOWED_PARENT_ORIGIN) return;
